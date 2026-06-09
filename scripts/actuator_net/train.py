@@ -6,11 +6,11 @@ log_dir = "example_experiment/2022/11_01/16_01_50_0"
 
 # Evaluates the existing actuator network by default
 # load_pretrained_model = True
-# actuator_network_path = "../../resources/actuator_nets/unitree_go1.pt"
+# actuator_network_path = "../../resources/actuator_nets/unitree_go2.pt"
 
 # Uncomment these lines to train a new actuator network
 load_pretrained_model = False
-actuator_network_path = "../../resources/actuator_nets/unitree_go1_new.pt"
+actuator_network_path = "../../resources/actuator_nets/unitree_go2_new.pt"
 
 
 log_dirs = glob(f"{log_dir_root}{log_dir}/", recursive=True)

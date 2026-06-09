@@ -5,13 +5,13 @@ import sys
 def build_parser():
     parser = ArgumentParser()
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--model_dir", type=str, default="checkpoints/train_min_cmd/2024-02-19-044826.014731")
-    parser.add_argument("--robot", type=str, default="go1", choices=["go1", "go2"], help="Robot config family used as the base when loading env_cfg.yaml.")
+    parser.add_argument("--model_dir", type=str, default="checkpoints/train/seed-0-ennewa-0.8-ennewc-0.0")
     parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--lin_speed", type=float, default=2.0)
+    parser.add_argument("--lin_speed", type=float, default=0.8)
     parser.add_argument("--ang_speed", type=float, default=0.0)
     parser.add_argument("--terrain_choice", type=str, default="flat")
     parser.add_argument("--terrain_diff", type=float, default=0.1)
+    parser.add_argument("--num_steps", type=int, default=1000, help="Number of policy rollout steps to run.")
     return parser
 
 
@@ -26,15 +26,12 @@ import numpy as np
 
 import pickle as pkl
 
-from go1_gym import MINI_GYM_ROOT_DIR
-from go1_gym.envs.go1.go1_config_adaptive import AdaptiveGo1Config
-from go1_gym.envs.go1.go1_config_adaptive_terrain import AdaptiveGo1ConfigTerrain
-from go1_gym.envs.base.legged_robot_config import Cfg
-from go1_gym.envs.go1.velocity_tracking import VelocityTrackingEasyEnv
-from go1_gym.envs.go2.go2_config_adaptive import AdaptiveGo2Config
-from go1_gym.envs.go2.go2_config_adaptive_terrain import AdaptiveGo2ConfigTerrain
-from go1_gym.utils.helpers import dict_to_env_cfg
-from go1_gym.utils.logger import Logger
+from gym import MINI_GYM_ROOT_DIR
+from gym.envs.base.legged_robot_config import Cfg
+from gym.envs.velocity_tracking import VelocityTrackingEasyEnv
+from gym.envs.go2.go2_config_adaptive_terrain import AdaptiveGo2ConfigTerrain
+from gym.utils.helpers import dict_to_env_cfg
+from gym.utils.logger import Logger
 
 from tqdm import tqdm
 import os
@@ -57,13 +54,12 @@ def load_policy(logdir):
     return policy
 
 
-def load_env(logdir, headless=False, terrain_choice="flat", terrain_diff=0.1, device="cuda:0", robot="go1"):
+def load_env(logdir, headless=False, terrain_choice="flat", terrain_diff=0.1, device="cuda:0"):
     print("Loading from directory ", logdir)
 
     with open(logdir + "/env_cfg.yaml", 'r') as file:
         yaml_cfg = yaml.load(file, Loader=yaml.SafeLoader )
-        cfg_base = AdaptiveGo2ConfigTerrain if robot == "go2" else AdaptiveGo1ConfigTerrain
-        cfg = cfg_base()
+        cfg = AdaptiveGo2ConfigTerrain()
         cfg: Cfg = dict_to_env_cfg(cfg, yaml_cfg)
 
     # turn off DR for evaluation script
@@ -121,7 +117,7 @@ def load_env(logdir, headless=False, terrain_choice="flat", terrain_diff=0.1, de
     temp_cap_dir = os.path.join(MINI_GYM_ROOT_DIR, logdir, "temp_cap_dir")
     os.makedirs(temp_cap_dir, exist_ok=True)
 
-    from go1_gym.envs.wrappers.history_wrapper import HistoryWrapper
+    from gym.envs.wrappers.history_wrapper import HistoryWrapper
 
     env = VelocityTrackingEasyEnv(sim_device=device, headless=headless, cfg=cfg, enable_camera_sensor=True, temp_cap_dir=temp_cap_dir)
     env = HistoryWrapper(env)
@@ -132,13 +128,13 @@ def load_env(logdir, headless=False, terrain_choice="flat", terrain_diff=0.1, de
     return env, policy
 
 
-def play_go1(model_dir, lin_x_speed, yaw_speed, headless=True, terrain_choice="flat", terrain_diff=0.1, device='cuda:0', robot="go1"):
+def play_go2(model_dir, lin_x_speed, yaw_speed, headless=True, terrain_choice="flat", terrain_diff=0.1, device='cuda:0', num_steps=1000):
 
     model_dir = f"{MINI_GYM_ROOT_DIR}/{model_dir}"
-    env, policy = load_env(model_dir, headless=headless, terrain_choice=terrain_choice, terrain_diff=terrain_diff, device=device, robot=robot)
+    env, policy = load_env(model_dir, headless=headless, terrain_choice=terrain_choice, terrain_diff=terrain_diff, device=device)
     os.makedirs(os.path.join(model_dir, "analysis"), exist_ok=True)
 
-    num_eval_steps = 1000
+    num_eval_steps = num_steps
     gaits = {
         "pronking": [0, 0, 0],
         "trotting": [0.5, 0, 0],
@@ -186,7 +182,7 @@ def play_go1(model_dir, lin_x_speed, yaw_speed, headless=True, terrain_choice="f
         env.commands[:, 12] = stance_width_cmd
         obs, rew, done, info = env.step(actions)
 
-        if i >= 100 and i <= 400:
+        if i >= min(100, max(0, num_eval_steps // 10)) and i <= min(400, num_eval_steps - 1):
             log_dict = {
                 'command_x': env.env.commands[:, 0].cpu().numpy(),
                 'command_y': env.env.commands[:, 1].cpu().numpy(),
@@ -243,7 +239,7 @@ if __name__ == '__main__':
     parser = build_parser()
     args = parser.parse_args()
 
-    play_go1(
+    play_go2(
         model_dir=args.model_dir,
         lin_x_speed=args.lin_speed,
         yaw_speed=args.ang_speed,
@@ -251,5 +247,5 @@ if __name__ == '__main__':
         terrain_choice=args.terrain_choice,
         terrain_diff=args.terrain_diff,
         device="cuda:{}".format(args.device),
-        robot=args.robot
+        num_steps=args.num_steps
     )
