@@ -89,10 +89,22 @@ pip install -e .
 pip install scipy pyyaml moviepy opencv-python lcm netifaces tqdm matplotlib
 ```
 
-If Isaac Gym reports `libpython3.8.so.1.0: cannot open shared object file`, export the conda library path before running training/play:
+Isaac Gym may report `libpython3.8.so.1.0: cannot open shared object file` unless the conda library path is visible. Configure an activation hook once so every future `conda activate aer_wtw` sets it automatically:
 
 ```bash
+conda activate aer_wtw
+mkdir -p "$CONDA_PREFIX/etc/conda/activate.d"
+cat > "$CONDA_PREFIX/etc/conda/activate.d/aer_wtw_ld_library_path.sh" <<'EOF'
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+EOF
+```
+
+Then reload the environment before training or play:
+
+```bash
+conda deactivate
+conda activate aer_wtw
+echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -x "$CONDA_PREFIX/lib"
 ```
 
 Verify imports in the expected order:
@@ -305,7 +317,7 @@ python scripts/train.py --help
 python scripts/play.py --help
 ```
 
-Isaac Gym smoke checks after activating `aer_wtw` and exporting `LD_LIBRARY_PATH` if needed:
+Isaac Gym smoke checks after activating `aer_wtw` with the `activate.d` library-path hook configured:
 
 ```bash
 python scripts/train.py --cfg adaptive_en --headless --device 0 --seed 0 --iterations 1 --num_envs 2 --num_steps_per_env 1
