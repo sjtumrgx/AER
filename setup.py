@@ -18,6 +18,7 @@ setup(
                       'numpy==1.23.5',
                       'scipy',
                       'pyyaml',
-                      'moviepy'
+                      'moviepy',
+                      'wandb'
                       ]
 )

@@ -13,6 +13,12 @@ def build_parser():
     parser.add_argument('--iterations', default=5000, type=int, help="Number of PPO learning iterations.")
     parser.add_argument('--num_envs', default=None, type=int, help="Override the Go2 environment count for smoke tests or smaller GPUs.")
     parser.add_argument('--num_steps_per_env', default=None, type=int, help="Override PPO rollout steps per environment for smoke tests.")
+    parser.add_argument('--wandb', action='store_true', help="Enable Weights & Biases logging for reward, loss, curriculum, and timing curves.")
+    parser.add_argument('--wandb_project', default='aer-go2', type=str, help="Weights & Biases project name used when --wandb is set.")
+    parser.add_argument('--wandb_entity', default=None, type=str, help="Optional Weights & Biases entity/team.")
+    parser.add_argument('--wandb_name', default=None, type=str, help="Optional Weights & Biases run name. Defaults to the checkpoint run name.")
+    parser.add_argument('--wandb_group', default=None, type=str, help="Optional Weights & Biases group for multi-run comparisons.")
+    parser.add_argument('--wandb_mode', default='online', choices=['online', 'offline', 'disabled'], type=str, help="Weights & Biases mode used when --wandb is set.")
     return parser
 
 
@@ -41,6 +47,7 @@ from gym_learn.ppo_cse import Runner
 from gym_learn.ppo_cse.actor_critic import AC_Args
 from gym_learn.ppo_cse.ppo import PPO_Args
 from gym_learn.ppo_cse import RunnerArgs
+from gym_learn.utils.wandb_logging import WandbLogger
 
 from pathlib import Path
 import yaml
@@ -71,18 +78,41 @@ def train_go2(args, logdir):
     with open(f"{logdir}/env_cfg.yaml", "w") as file:
         yaml.dump(env_dict, file)
 
-    env = VelocityTrackingEasyEnv(sim_device=f'cuda:{args.device}', headless=args.headless, cfg=cfg)
+    run_name = args.wandb_name or Path(logdir).name
+    wandb_logger = WandbLogger(enabled=args.wandb)
+    wandb_config = {
+        "args": vars(args),
+        "env": env_dict,
+        "AC_Args": vars(AC_Args),
+        "PPO_Args": vars(PPO_Args),
+        "RunnerArgs": vars(RunnerArgs),
+    }
 
-    logger.log_params(
-        AC_Args=vars(AC_Args),
-        PPO_Args=vars(PPO_Args),
-        RunnerArgs=vars(RunnerArgs),
-        Cfg=vars(Cfg)
-    )
+    try:
+        wandb_logger.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            name=run_name,
+            group=args.wandb_group,
+            mode=args.wandb_mode,
+            config=wandb_config,
+            dir=logdir,
+        )
 
-    env = HistoryWrapper(env)
-    runner = Runner(env, device=f"cuda:{args.device}")
-    runner.learn(num_learning_iterations=args.iterations, init_at_random_ep_len=True, eval_freq=100)
+        env = VelocityTrackingEasyEnv(sim_device=f'cuda:{args.device}', headless=args.headless, cfg=cfg)
+
+        logger.log_params(
+            AC_Args=vars(AC_Args),
+            PPO_Args=vars(PPO_Args),
+            RunnerArgs=vars(RunnerArgs),
+            Cfg=vars(Cfg)
+        )
+
+        env = HistoryWrapper(env)
+        runner = Runner(env, device=f"cuda:{args.device}", metrics_logger=wandb_logger)
+        runner.learn(num_learning_iterations=args.iterations, init_at_random_ep_len=True, eval_freq=100)
+    finally:
+        wandb_logger.finish()
 
 
 if __name__ == '__main__':

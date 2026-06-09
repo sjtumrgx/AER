@@ -86,7 +86,7 @@ pip install -e /path/to/isaacgym/python
 # Install this Go2 repository and runtime helpers.
 cd /path/to/AER
 pip install -e .
-pip install scipy pyyaml moviepy opencv-python lcm netifaces tqdm matplotlib
+pip install scipy pyyaml moviepy opencv-python lcm netifaces tqdm matplotlib wandb
 ```
 
 Isaac Gym may report `libpython3.8.so.1.0: cannot open shared object file` unless the conda library path is visible. Configure an activation hook once so every future `conda activate aer_wtw` sets it automatically:
@@ -164,6 +164,12 @@ Go2 configuration files:
 | `--iterations` | `5000` | PPO learning iterations |
 | `--num_envs` | `4000` | Effective Go2 environment count from `Go2Config.env.num_envs`; lower it only for small GPUs or debugging |
 | `--num_steps_per_env` | `24` | PPO rollout steps per environment per iteration from `RunnerArgs.num_steps_per_env` |
+| `--wandb` | off | Enable Weights & Biases logging for reward, loss, curriculum, timing, and PPO curves |
+| `--wandb_project` | `aer-go2` | W&B project name used with `--wandb` |
+| `--wandb_entity` | unset | Optional W&B entity/team |
+| `--wandb_name` | unset | Optional W&B run name; defaults to the checkpoint run name |
+| `--wandb_group` | unset | Optional W&B group for comparing multiple runs |
+| `--wandb_mode` | `online` | W&B mode: `online`, `offline`, or `disabled` |
 
 Flat-ground example:
 
@@ -178,6 +184,24 @@ python scripts/train.py \
   --iterations 5000 \
   --num_envs 4000 \
   --num_steps_per_env 24
+```
+
+Enable W&B curves by adding `--wandb`. Log in once with `wandb login`, or use `--wandb_mode offline` on machines without external network access. The run logs reward terms under `train/episode/*` and `eval/episode/*`, PPO losses under `ppo/*`, plus rollout timing and total timesteps.
+
+```bash
+conda activate aer_wtw
+wandb login
+python scripts/train.py \
+  --cfg adaptive_en \
+  --headless \
+  --device 0 \
+  --seed 0 \
+  --en_new_actual 0.8 \
+  --iterations 5000 \
+  --num_envs 4000 \
+  --num_steps_per_env 24 \
+  --wandb \
+  --wandb_project aer-go2
 ```
 
 Terrain example:
@@ -210,7 +234,10 @@ python scripts/train.py \
   --en_new_actual 0.8 \
   --iterations 5000 \
   --num_envs 4000 \
-  --num_steps_per_env 24 &
+  --num_steps_per_env 24 \
+  --wandb \
+  --wandb_project aer-go2 \
+  --wandb_group multi-gpu-default &
 
 python scripts/train.py \
   --cfg adaptive_en \
@@ -220,7 +247,10 @@ python scripts/train.py \
   --en_new_actual 0.8 \
   --iterations 5000 \
   --num_envs 4000 \
-  --num_steps_per_env 24 &
+  --num_steps_per_env 24 \
+  --wandb \
+  --wandb_project aer-go2 \
+  --wandb_group multi-gpu-default &
 
 python scripts/train.py \
   --cfg adaen_terrain \
@@ -230,7 +260,10 @@ python scripts/train.py \
   --en_new_actual 0.8 \
   --iterations 5000 \
   --num_envs 4000 \
-  --num_steps_per_env 24 &
+  --num_steps_per_env 24 \
+  --wandb \
+  --wandb_project aer-go2 \
+  --wandb_group multi-gpu-default &
 
 python scripts/train.py \
   --cfg adaen_terrain \
@@ -240,7 +273,10 @@ python scripts/train.py \
   --en_new_actual 0.8 \
   --iterations 5000 \
   --num_envs 4000 \
-  --num_steps_per_env 24 &
+  --num_steps_per_env 24 \
+  --wandb \
+  --wandb_project aer-go2 \
+  --wandb_group multi-gpu-default &
 
 wait
 ```

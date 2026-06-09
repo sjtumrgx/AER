@@ -62,11 +62,12 @@ class RunnerArgs(PrefixProto, cli=False):
 
 class Runner:
 
-    def __init__(self, env, device='cpu'):
+    def __init__(self, env, device='cpu', metrics_logger=None):
         from .ppo import PPO
 
         self.device = device
         self.env = env
+        self.metrics_logger = metrics_logger
 
         actor_critic = ActorCritic(self.env.num_obs,
                                       self.env.num_privileged_obs,
@@ -154,13 +155,18 @@ class Runner:
                         self.device), obs_history.to(self.device), rewards.to(self.device), dones.to(self.device)
                     self.alg.process_env_step(rewards[:num_train_envs], dones[:num_train_envs], infos)
 
+                    wandb_step = self.tot_timesteps + (i + 1) * self.env.num_envs
                     if 'train/episode' in infos:
                         with logger.Prefix(metrics="train/episode"):
                             logger.store_metrics(**infos['train/episode'])
+                        if self.metrics_logger is not None:
+                            self.metrics_logger.log_prefixed("train/episode", infos['train/episode'], step=wandb_step)
 
                     if 'eval/episode' in infos:
                         with logger.Prefix(metrics="eval/episode"):
                             logger.store_metrics(**infos['eval/episode'])
+                        if self.metrics_logger is not None:
+                            self.metrics_logger.log_prefixed("eval/episode", infos['eval/episode'], step=wandb_step)
 
                     if 'curriculum' in infos:
 
@@ -206,21 +212,33 @@ class Runner:
             stop = time.time()
             learn_time = stop - start
 
-            logger.store_metrics(
+            update_metrics = {
                 # total_time=learn_time - collection_time,
-                time_elapsed=logger.since('start'),
-                time_iter=logger.split('epoch'),
-                adaptation_loss=mean_adaptation_module_loss,
-                mean_value_loss=mean_value_loss,
-                mean_surrogate_loss=mean_surrogate_loss,
-                mean_decoder_loss=mean_decoder_loss,
-                mean_decoder_loss_student=mean_decoder_loss_student,
-                mean_decoder_test_loss=mean_decoder_test_loss,
-                mean_decoder_test_loss_student=mean_decoder_test_loss_student,
-                mean_adaptation_module_test_loss=mean_adaptation_module_test_loss
-            )
+                "time_elapsed": logger.since('start'),
+                "time_iter": logger.split('epoch'),
+                "adaptation_loss": mean_adaptation_module_loss,
+                "mean_value_loss": mean_value_loss,
+                "mean_surrogate_loss": mean_surrogate_loss,
+                "mean_decoder_loss": mean_decoder_loss,
+                "mean_decoder_loss_student": mean_decoder_loss_student,
+                "mean_decoder_test_loss": mean_decoder_test_loss,
+                "mean_decoder_test_loss_student": mean_decoder_test_loss_student,
+                "mean_adaptation_module_test_loss": mean_adaptation_module_test_loss,
+            }
+            logger.store_metrics(**update_metrics)
 
             self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
+            if self.metrics_logger is not None:
+                self.metrics_logger.log(
+                    {
+                        "train/timesteps": self.tot_timesteps,
+                        "train/iteration": it,
+                        "rollout/collection_time": collection_time,
+                        "rollout/learn_time": learn_time,
+                        **{f"ppo/{key}": value for key, value in update_metrics.items()},
+                    },
+                    step=self.tot_timesteps,
+                )
             if logger.every(RunnerArgs.log_freq, "iteration", start_on=1):
                 # if it % Config.log_freq == 0:
                 logger.log_metrics_summary(key_values={"timesteps": self.tot_timesteps, "iterations": it})
