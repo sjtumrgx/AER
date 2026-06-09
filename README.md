@@ -162,8 +162,8 @@ Go2 configuration files:
 | `--en_new_actual` | `0.0` | Actual energy regularization scale |
 | `--en_new_cmd` | `0.0` | Command-conditioned energy regularization scale |
 | `--iterations` | `5000` | PPO learning iterations |
-| `--num_envs` | unset | Optional environment-count override for smoke tests or small GPUs |
-| `--num_steps_per_env` | unset | Optional PPO rollout-step override for smoke tests |
+| `--num_envs` | `4000` | Effective Go2 environment count from `Go2Config.env.num_envs`; lower it only for small GPUs or debugging |
+| `--num_steps_per_env` | `24` | PPO rollout steps per environment per iteration from `RunnerArgs.num_steps_per_env` |
 
 Flat-ground example:
 
@@ -174,7 +174,10 @@ python scripts/train.py \
   --headless \
   --device 0 \
   --seed 0 \
-  --en_new_actual 0.8
+  --en_new_actual 0.8 \
+  --iterations 5000 \
+  --num_envs 4000 \
+  --num_steps_per_env 24
 ```
 
 Terrain example:
@@ -186,21 +189,63 @@ python scripts/train.py \
   --headless \
   --device 0 \
   --seed 0 \
-  --en_new_actual 0.8
+  --en_new_actual 0.8 \
+  --iterations 5000 \
+  --num_envs 4000 \
+  --num_steps_per_env 24
 ```
 
-For a fast smoke run, reduce both the iteration count and simulation batch size:
+Multi-GPU training:
+
+The current PPO-CSE training script binds one training process to one CUDA device; it does not split a single PPO run across multiple GPUs with DDP. To use multiple GPUs, launch independent runs in parallel, usually with different seeds or configs. The commands below keep the default training scale explicit: `--iterations 5000`, `--num_envs 4000`, and `--num_steps_per_env 24`.
 
 ```bash
+conda activate aer_wtw
+
 python scripts/train.py \
   --cfg adaptive_en \
   --headless \
   --device 0 \
   --seed 0 \
-  --iterations 1 \
-  --num_envs 2 \
-  --num_steps_per_env 1
+  --en_new_actual 0.8 \
+  --iterations 5000 \
+  --num_envs 4000 \
+  --num_steps_per_env 24 &
+
+python scripts/train.py \
+  --cfg adaptive_en \
+  --headless \
+  --device 1 \
+  --seed 1 \
+  --en_new_actual 0.8 \
+  --iterations 5000 \
+  --num_envs 4000 \
+  --num_steps_per_env 24 &
+
+python scripts/train.py \
+  --cfg adaen_terrain \
+  --headless \
+  --device 2 \
+  --seed 2 \
+  --en_new_actual 0.8 \
+  --iterations 5000 \
+  --num_envs 4000 \
+  --num_steps_per_env 24 &
+
+python scripts/train.py \
+  --cfg adaen_terrain \
+  --headless \
+  --device 3 \
+  --seed 3 \
+  --en_new_actual 0.8 \
+  --iterations 5000 \
+  --num_envs 4000 \
+  --num_steps_per_env 24 &
+
+wait
 ```
+
+If one GPU runs out of memory, lower `--num_envs` for that process only.
 
 Training outputs are written below `checkpoints/train/<run-name>/`. The runner exports `checkpoints/body_latest.jit` and `checkpoints/adaptation_module_latest.jit` for evaluation/deployment.
 
@@ -317,10 +362,15 @@ python scripts/train.py --help
 python scripts/play.py --help
 ```
 
-Isaac Gym smoke checks after activating `aer_wtw` with the `activate.d` library-path hook configured:
+Isaac Gym default-parameter training command after activating `aer_wtw` with the `activate.d` library-path hook configured:
 
 ```bash
-python scripts/train.py --cfg adaptive_en --headless --device 0 --seed 0 --iterations 1 --num_envs 2 --num_steps_per_env 1
+python scripts/train.py --cfg adaptive_en --headless --device 0 --seed 0 --iterations 5000 --num_envs 4000 --num_steps_per_env 24
+```
+
+Short play check against an existing checkpoint:
+
+```bash
 python scripts/play.py --device 0 --headless --model_dir checkpoints/train/seed-0-ennewa-0.0-ennewc-0.0 --lin_speed 0.1 --ang_speed 0.0 --terrain_choice flat --terrain_diff 0.1 --num_steps 5
 ```
 
