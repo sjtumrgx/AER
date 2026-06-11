@@ -38,6 +38,8 @@ import os
 from scipy.spatial.transform import Rotation as R
 import yaml
 
+from play_command_defaults import assign_nominal_go2_commands
+
 
 def load_policy(logdir):
     body = torch.jit.load(logdir + '/checkpoints/body_latest.jit', map_location="cpu")
@@ -46,8 +48,15 @@ def load_policy(logdir):
 
     def policy(obs, info={}):
         # i = 0
-        latent = adaptation_module.forward(obs["obs_history"].to('cpu'))
-        action = body.forward(torch.cat((obs["obs_history"].to('cpu'), latent), dim=-1))
+        obs_history = obs["obs_history"].to('cpu')
+        current_obs = obs["obs"].to('cpu')
+        latent = adaptation_module.forward(obs_history)
+        # New load-carry student bodies consume [current obs, latent]. Older
+        # checkpoints consumed [obs_history, latent], so fall back by shape.
+        try:
+            action = body.forward(torch.cat((current_obs, latent), dim=-1))
+        except RuntimeError:
+            action = body.forward(torch.cat((obs_history, latent), dim=-1))
         info['latent'] = latent
         return action
 
@@ -61,6 +70,11 @@ def load_env(logdir, headless=False, terrain_choice="flat", terrain_diff=0.1, de
         yaml_cfg = yaml.load(file, Loader=yaml.SafeLoader )
         cfg = AdaptiveGo2ConfigTerrain()
         cfg: Cfg = dict_to_env_cfg(cfg, yaml_cfg)
+
+    # Old checkpoints can persist a stale False value.  This option only affects
+    # visual mesh orientation in Isaac Gym; keep playback/rendering correct
+    # without changing policy inputs or collision geometry.
+    cfg.asset.flip_visual_attachments = True
 
     # turn off DR for evaluation script
     cfg.domain_rand.push_robots = False
@@ -135,28 +149,10 @@ def play_go2(model_dir, lin_x_speed, yaw_speed, headless=True, terrain_choice="f
     os.makedirs(os.path.join(model_dir, "analysis"), exist_ok=True)
 
     num_eval_steps = num_steps
-    gaits = {
-        "pronking": [0, 0, 0],
-        "trotting": [0.5, 0, 0],
-        "bounding": [0, 0.5, 0],
-        "pacing": [0, 0, 0.5]
-    }
-
     x_vel_cmd, y_vel_cmd, yaw_vel_cmd = lin_x_speed, 0.0, yaw_speed
-    # body_height_cmd = 0.0
-    # step_frequency_cmd = 3.0
-    # gait = torch.tensor(gaits["trotting"])
-    # footswing_height_cmd = 0.08
-    # pitch_cmd = 0.0
-    # roll_cmd = 0.0
-    # stance_width_cmd = 0.25
-    body_height_cmd = 0.0
-    step_frequency_cmd = 0.0
-    gait = torch.tensor(gaits["pronking"])
-    footswing_height_cmd = 0.0
-    pitch_cmd = 0.0
-    roll_cmd = 0.0
-    stance_width_cmd = 0.0
+    # Keep play-time command conditioning inside the Go2 training distribution.
+    # Zeroing frequency/duration/swing/stance commands makes the policy receive
+    # out-of-distribution gait inputs and produces visually broken body/leg poses.
 
     measured_x_vels = np.zeros(num_eval_steps)
     joint_positions = np.zeros((num_eval_steps, 12))
@@ -169,17 +165,7 @@ def play_go2(model_dir, lin_x_speed, yaw_speed, headless=True, terrain_choice="f
     for i in tqdm(range(num_eval_steps)):
         with torch.no_grad():
             actions = policy(obs)
-        env.commands[:, 0] = x_vel_cmd
-        env.commands[:, 1] = y_vel_cmd
-        env.commands[:, 2] = yaw_vel_cmd
-        env.commands[:, 3] = body_height_cmd
-        env.commands[:, 4] = step_frequency_cmd
-        env.commands[:, 5:8] = gait
-        env.commands[:, 8] = 0.0
-        env.commands[:, 9] = footswing_height_cmd
-        env.commands[:, 10] = pitch_cmd
-        env.commands[:, 11] = roll_cmd
-        env.commands[:, 12] = stance_width_cmd
+        assign_nominal_go2_commands(env.commands, x_vel_cmd, y_vel_cmd, yaw_vel_cmd)
         obs, rew, done, info = env.step(actions)
 
         if i >= min(100, max(0, num_eval_steps // 10)) and i <= min(400, num_eval_steps - 1):

@@ -3,6 +3,11 @@ runs
 .secret*
 # ml_logger cache files
 .cache
+
+# Local agent/runtime state; do not publish orchestration logs or checkpoints.
+.ccw/
+.omx/
+.workflow/
 # These are some examples of commonly ignored file patterns.
 # You should customize this list as applicable to your project.
 # Learn more about .gitignore:

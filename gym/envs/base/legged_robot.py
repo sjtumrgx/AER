@@ -410,7 +410,7 @@ class LeggedRobot(BaseTask):
                 self.next_privileged_obs_buf,
                 (self.friction_coeffs[:, 0].unsqueeze(1) - friction_coeffs_shift) * friction_coeffs_scale
             ), dim=1)
-        if self.cfg.env.priv_observe_ground_friction:
+        if self.cfg.env.priv_observe_ground_friction and not getattr(self.cfg.env, "privileged_load_carry_schema", False):
             self.ground_friction_coeffs = self._get_ground_frictions(range(self.num_envs))
             ground_friction_coeffs_scale, ground_friction_coeffs_shift = get_scale_shift(self.cfg.normalization.ground_friction_range)
             self.privileged_obs_buf = torch.cat((
@@ -502,7 +502,69 @@ class LeggedRobot(BaseTask):
         if self.cfg.env.priv_observe_desired_contact_states:
             self.privileged_obs_buf = torch.cat((self.privileged_obs_buf, self.desired_contact_states), dim=-1)
 
+        if getattr(self.cfg.env, "privileged_load_carry_schema", False):
+            self.privileged_obs_buf = torch.cat((self.privileged_obs_buf, self._get_load_carry_privileged_obs()), dim=-1)
+
         assert self.privileged_obs_buf.shape[1] == self.cfg.env.num_privileged_obs, f"num_privileged_obs ({self.cfg.env.num_privileged_obs}) != the number of privileged observations ({self.privileged_obs_buf.shape[1]}), you will discard data from the student!"
+
+    def _scale_to_unit_range(self, values, range_name):
+        value_range = getattr(self.cfg.normalization, range_name)
+        scale, shift = get_scale_shift(value_range)
+        return (values - shift) * scale
+
+    def _get_ground_friction_for_privileged_obs(self):
+        if hasattr(self, "ground_friction_coeffs"):
+            return self.ground_friction_coeffs.view(self.num_envs, 1)
+        if hasattr(self, "friction_coeffs"):
+            return self.friction_coeffs[:, 0].view(self.num_envs, 1)
+        return torch.ones(self.num_envs, 1, device=self.device)
+
+    def get_terrain_difficulty(self):
+        if hasattr(self, "terrain_levels") and self.cfg.terrain.num_rows > 1:
+            return (self.terrain_levels.float() / max(self.cfg.terrain.num_rows - 1, 1)).view(self.num_envs, 1)
+        if self.measured_heights is not None:
+            return torch.std(self.measured_heights, dim=1, keepdim=True)
+        return torch.zeros(self.num_envs, 1, device=self.device)
+
+    def _get_terrain_privileged_parameters(self):
+        level = self.get_terrain_difficulty()
+        if hasattr(self, "terrain_types") and self.cfg.terrain.num_cols > 1:
+            terrain_type = (self.terrain_types.float() / max(self.cfg.terrain.num_cols - 1, 1)).view(self.num_envs, 1)
+        else:
+            terrain_type = torch.zeros(self.num_envs, 1, device=self.device)
+        difficulty_scale = torch.ones(self.num_envs, 1, device=self.device) * float(getattr(self.cfg.terrain, "difficulty_scale", 0.0))
+        if self.measured_heights is not None:
+            height_stat = torch.std(self.measured_heights, dim=1, keepdim=True)
+        else:
+            height_stat = torch.zeros(self.num_envs, 1, device=self.device)
+        return torch.cat((level, terrain_type, difficulty_scale, height_stat), dim=1)
+
+    def _get_load_carry_privileged_obs(self):
+        parts = []
+        env_cfg = self.cfg.env
+        if getattr(env_cfg, "priv_observe_robot_base_velocity", False):
+            parts.append(torch.cat((self.base_lin_vel, self.base_ang_vel), dim=1))
+        if getattr(env_cfg, "priv_observe_payload_mass", False):
+            parts.append(self._scale_to_unit_range(self.payloads.view(self.num_envs, 1), "added_mass_range"))
+        if getattr(env_cfg, "priv_observe_payload_com", False):
+            parts.append(self._scale_to_unit_range(self.com_displacements, "com_displacement_range"))
+        if getattr(env_cfg, "priv_observe_payload_inertia", False):
+            parts.append(self._scale_to_unit_range(self.payload_inertias, "payload_inertia_range"))
+        if getattr(env_cfg, "priv_observe_payload_relative_pose", False):
+            parts.append(torch.cat((self.payload_relative_pos, self.payload_relative_quat), dim=1))
+        if getattr(env_cfg, "priv_observe_payload_relative_velocity", False):
+            lin = self._scale_to_unit_range(self.payload_relative_velocity[:, :3], "payload_relative_lin_vel_range")
+            ang = self._scale_to_unit_range(self.payload_relative_velocity[:, 3:6], "payload_relative_ang_vel_range")
+            parts.append(torch.cat((lin, ang), dim=1))
+        if getattr(env_cfg, "priv_observe_ground_friction", False):
+            parts.append(self._scale_to_unit_range(self._get_ground_friction_for_privileged_obs(), "ground_friction_range"))
+        if getattr(env_cfg, "priv_observe_terrain_parameters", False):
+            parts.append(self._get_terrain_privileged_parameters())
+        if getattr(env_cfg, "priv_observe_external_disturbance", False):
+            parts.append(self._scale_to_unit_range(self.external_disturbances, "external_disturbance_range"))
+        if not parts:
+            return torch.empty(self.num_envs, 0, device=self.device)
+        return torch.cat(parts, dim=1)
 
     def create_sim(self):
         """ Creates simulation, terrain and evironments
@@ -625,6 +687,20 @@ class LeggedRobot(BaseTask):
         if cfg.domain_rand.randomize_com_displacement:
             min_com_displacement, max_com_displacement = cfg.domain_rand.com_displacement_range
             self.com_displacements[env_ids, :] = torch.rand(len(env_ids), 3, dtype=torch.float, device=self.device, requires_grad=False) * (max_com_displacement - min_com_displacement) + min_com_displacement
+        if getattr(cfg.domain_rand, "randomize_payload_inertia", False):
+            min_inertia, max_inertia = cfg.domain_rand.payload_inertia_range
+            self.payload_inertias[env_ids, :] = torch.rand(len(env_ids), 6, dtype=torch.float, device=self.device, requires_grad=False) * (max_inertia - min_inertia) + min_inertia
+        if getattr(cfg.domain_rand, "randomize_payload_relative_pose", False):
+            min_pos, max_pos = cfg.domain_rand.payload_relative_pos_range
+            self.payload_relative_pos[env_ids, :] = torch.rand(len(env_ids), 3, dtype=torch.float, device=self.device, requires_grad=False) * (max_pos - min_pos) + min_pos
+            min_angle, max_angle = cfg.domain_rand.payload_relative_angle_range
+            angles = torch.rand(len(env_ids), 3, dtype=torch.float, device=self.device, requires_grad=False) * (max_angle - min_angle) + min_angle
+            self.payload_relative_quat[env_ids, :] = quat_from_euler_xyz(angles[:, 0], angles[:, 1], angles[:, 2])
+        if getattr(cfg.domain_rand, "randomize_payload_relative_velocity", False):
+            min_lin, max_lin = cfg.domain_rand.payload_relative_lin_vel_range
+            min_ang, max_ang = cfg.domain_rand.payload_relative_ang_vel_range
+            self.payload_relative_velocity[env_ids, :3] = torch.rand(len(env_ids), 3, dtype=torch.float, device=self.device, requires_grad=False) * (max_lin - min_lin) + min_lin
+            self.payload_relative_velocity[env_ids, 3:6] = torch.rand(len(env_ids), 3, dtype=torch.float, device=self.device, requires_grad=False) * (max_ang - min_ang) + min_ang
 
         if cfg.domain_rand.randomize_friction:
             min_friction, max_friction = cfg.domain_rand.friction_range
@@ -1008,14 +1084,21 @@ class LeggedRobot(BaseTask):
     def _push_robots(self, env_ids, cfg):
         """ Random pushes the robots. Emulates an impulse by setting a randomized base velocity.
         """
+        if hasattr(self, "external_disturbances"):
+            self.external_disturbances[env_ids, :] = 0.
         if cfg.domain_rand.push_robots:
             env_ids = env_ids[self.episode_length_buf[env_ids] % int(cfg.domain_rand.push_interval) == 0]
             max_vel_xy = cfg.domain_rand.max_push_vel_xy
             max_vel_z = cfg.domain_rand.max_push_vel_z
             max_ang_rpy = cfg.domain_rand.max_push_ang_rpy
-            self.root_states[env_ids, 7:9] = torch_rand_float(-max_vel_xy, max_vel_xy, (len(env_ids), 2), device=self.device)  # lin vel x/y
-            self.root_states[env_ids, 9:10] = torch_rand_float(-max_vel_z, max_vel_z, (len(env_ids), 1), device=self.device)  # lin vel z
-            self.root_states[env_ids, 10:13] = torch_rand_float(-max_ang_rpy, max_ang_rpy, (len(env_ids), 3), device=self.device)  # ang vel rpy
+            linear_disturbance_xy = torch_rand_float(-max_vel_xy, max_vel_xy, (len(env_ids), 2), device=self.device)
+            linear_disturbance_z = torch_rand_float(-max_vel_z, max_vel_z, (len(env_ids), 1), device=self.device)
+            angular_disturbance = torch_rand_float(-max_ang_rpy, max_ang_rpy, (len(env_ids), 3), device=self.device)
+            self.root_states[env_ids, 7:9] = linear_disturbance_xy  # lin vel x/y
+            self.root_states[env_ids, 9:10] = linear_disturbance_z  # lin vel z
+            self.root_states[env_ids, 10:13] = angular_disturbance  # ang vel rpy
+            if hasattr(self, "external_disturbances"):
+                self.external_disturbances[env_ids, :] = torch.cat((linear_disturbance_xy, linear_disturbance_z, angular_disturbance), dim=1)
             self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.root_states))
 
     def _teleport_robots(self, env_ids, cfg):
@@ -1227,6 +1310,13 @@ class LeggedRobot(BaseTask):
         self.restitutions = self.default_restitution * torch.ones(self.num_envs, 4, dtype=torch.float, device=self.device, requires_grad=False)
         self.payloads = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
         self.com_displacements = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device, requires_grad=False)
+        self.payload_inertias = torch.zeros(self.num_envs, 6, dtype=torch.float, device=self.device, requires_grad=False)
+        self.payload_relative_pos = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device, requires_grad=False)
+        self.payload_relative_quat = torch.zeros(self.num_envs, 4, dtype=torch.float, device=self.device, requires_grad=False)
+        self.payload_relative_quat[:, 3] = 1.
+        self.payload_relative_velocity = torch.zeros(self.num_envs, 6, dtype=torch.float, device=self.device, requires_grad=False)
+        self.external_disturbances = torch.zeros(self.num_envs, 6, dtype=torch.float, device=self.device, requires_grad=False)
+        self.policy_energy_alpha = torch.ones(self.num_envs, 1, dtype=torch.float, device=self.device, requires_grad=False)
         self.motor_strengths = torch.ones(self.num_envs, self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
         self.motor_offsets = torch.zeros(self.num_envs, self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
         self.Kp_factors = torch.ones(self.num_envs, self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
@@ -1235,7 +1325,9 @@ class LeggedRobot(BaseTask):
         self.gravity_vec = to_torch(get_axis_params(-1., self.up_axis_idx), device=self.device).repeat((self.num_envs, 1))
 
         # if custom initialization values were passed in, set them here
-        dynamics_params = ["friction_coeffs", "restitutions", "payloads", "com_displacements", "motor_strengths", "Kp_factors", "Kd_factors"]
+        dynamics_params = ["friction_coeffs", "restitutions", "payloads", "com_displacements", "payload_inertias",
+                           "payload_relative_pos", "payload_relative_quat", "payload_relative_velocity",
+                           "external_disturbances", "motor_strengths", "Kp_factors", "Kd_factors"]
         if self.initial_dynamics_dict is not None:
             for k, v in self.initial_dynamics_dict.items():
                 if k in dynamics_params:
@@ -1710,3 +1802,18 @@ class LeggedRobot(BaseTask):
         # command_vels_abs = torch.abs(command_vels)
         # return m_Z / torch.where(command_vels_abs > 0.1, command_vels_abs, 0.1) + b_Z
         return self.get_energy_alpha(command_vels)
+
+    def set_policy_energy_alpha(self, alpha):
+        """Store policy-generated alpha_E for the next reward computation.
+
+        The asymmetric student/teacher policies compute alpha_E from latent load
+        state, velocity command, yaw command, and terrain difficulty before
+        stepping the simulator. The reward then consumes this buffer without
+        exposing privileged state to the deployed student.
+        """
+        if alpha is None:
+            return
+        alpha = torch.as_tensor(alpha, dtype=torch.float, device=self.device)
+        if alpha.dim() == 1:
+            alpha = alpha.unsqueeze(1)
+        self.policy_energy_alpha[:alpha.shape[0], :] = alpha[:, :1].detach()

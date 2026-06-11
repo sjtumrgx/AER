@@ -44,7 +44,7 @@ class Go2Config(Cfg):
         penalize_contacts_on = ["thigh", "calf"]
         terminate_after_contacts_on = ["base", "thigh", "calf", "hip"]
         self_collisions = 0  # 1 to disable, 0 to enable...bitwise filter
-        flip_visual_attachments = False
+        flip_visual_attachments = True
         fix_base_link = False
 
     class rewards(Cfg.rewards):

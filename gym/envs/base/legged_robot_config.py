@@ -61,6 +61,15 @@ class Cfg(BaseConfig):
         priv_observe_halftime_clock_inputs = False
         priv_observe_desired_contact_states = False
         priv_observe_dummy_variable = False
+        privileged_load_carry_schema = False
+        priv_observe_robot_base_velocity = False
+        priv_observe_payload_mass = False
+        priv_observe_payload_com = False
+        priv_observe_payload_inertia = False
+        priv_observe_payload_relative_pose = False
+        priv_observe_payload_relative_velocity = False
+        priv_observe_terrain_parameters = False
+        priv_observe_external_disturbance = False
 
         # Placeholder variables that will be set in training.
         max_episode_length = 0
@@ -257,6 +266,14 @@ class Cfg(BaseConfig):
         randomize_com_displacement = False
         # add link masses, increase range, randomize inertia, randomize joint properties
         com_displacement_range = [-0.15, 0.15]
+        randomize_payload_inertia = False
+        payload_inertia_range = [0.0, 0.05]
+        randomize_payload_relative_pose = False
+        payload_relative_pos_range = [-0.05, 0.05]
+        payload_relative_angle_range = [-0.20, 0.20]
+        randomize_payload_relative_velocity = False
+        payload_relative_lin_vel_range = [-0.2, 0.2]
+        payload_relative_ang_vel_range = [-0.5, 0.5]
         randomize_motor_strength = False
         motor_strength_range = [0.9, 1.1]
         randomize_Kp_factor = False
@@ -318,6 +335,10 @@ class Cfg(BaseConfig):
         energy_sigma = 300.0
         energy_sigma_lin = 200.0
         energy_sigma_ang = 100.0
+        energy_regularization_mode = "none"  # none, fixed, adaptive
+        fixed_energy_alpha = 1.0
+        transport_speed_floor = 0.05
+        transport_cost_clip = 100.0
 
         class scales:
             termination = -0.0
@@ -338,6 +359,7 @@ class Cfg(BaseConfig):
             energy_dep = 0.0
             energy_new_actual = 0.0
             energy_new_cmd = 0.0
+            load_normalized_transport = 0.0
             dof_pos_limits = 0.0
             feet_contact_forces = 0.
             feet_slip = 0.
@@ -369,6 +391,12 @@ class Cfg(BaseConfig):
         body_height_range = [0.0, 0.60]
         gravity_range = [-1.0, 1.0]
         motion = [-0.01, 0.01]
+        payload_inertia_range = [0.0, 0.05]
+        payload_relative_pos_range = [-0.1, 0.1]
+        payload_relative_lin_vel_range = [-1.0, 1.0]
+        payload_relative_ang_vel_range = [-2.0, 2.0]
+        terrain_parameter_range = [0.0, 1.0]
+        external_disturbance_range = [-2.0, 2.0]
 
         class obs_scales:
             lin_vel = 2.0

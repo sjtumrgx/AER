@@ -94,6 +94,21 @@ class NeutralGo2RepoTest(unittest.TestCase):
             for arg in args:
                 self.assertIn(arg, result.stdout)
 
+
+    def test_play_scripts_use_valid_go2_command_defaults(self):
+        helper = (ROOT / "scripts" / "play_command_defaults.py").read_text()
+        self.assertIn("gait_frequency: float = 3.0", helper)
+        self.assertIn("gait_duration: float = 0.5", helper)
+        self.assertIn("footswing_height: float = 0.08", helper)
+        self.assertIn("stance_width: float = 0.25", helper)
+
+        for script_name in ["play.py", "play_vary_lin.py", "play_vary_ang.py"]:
+            script = (ROOT / "scripts" / script_name).read_text()
+            self.assertIn("assign_nominal_go2_commands(env.commands", script)
+            self.assertNotIn("step_frequency_cmd = 0.0", script)
+            self.assertNotIn("footswing_height_cmd = 0.0", script)
+            self.assertNotIn("stance_width_cmd = 0.0", script)
+
     def test_readme_is_go2_focused(self):
         readme = (ROOT / "README.md").read_text()
         self.assertIn("# Go2 sim-to-real locomotion", readme)
@@ -107,6 +122,15 @@ class NeutralGo2RepoTest(unittest.TestCase):
         ]
         for section in forbidden_sections:
             self.assertNotIn(section, readme)
+
+    def test_go2_play_rendering_uses_isaacgym_visual_flip(self):
+        config = (ROOT / "gym" / "envs" / "go2" / "go2_config.py").read_text()
+        self.assertIn("flip_visual_attachments = True", config)
+
+        for script_name in ["play.py", "play_vary_lin.py", "play_vary_ang.py"]:
+            script = (ROOT / "scripts" / script_name).read_text()
+            self.assertIn("cfg.asset.flip_visual_attachments = True", script)
+            self.assertIn("Old checkpoints can persist a stale False value", script)
 
     def test_go2_asset_references_resolve(self):
         urdf = ROOT / "resources/robots/go2/urdf/go2.urdf"

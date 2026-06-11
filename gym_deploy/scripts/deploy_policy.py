@@ -61,8 +61,15 @@ def load_policy(logdir):
 
     def policy(obs, info):
         i = 0
-        latent = adaptation_module.forward(obs["obs_history"].to('cpu'))
-        action = body.forward(torch.cat((obs["obs_history"].to('cpu'), latent), dim=-1))
+        obs_history = obs["obs_history"].to('cpu')
+        current_obs = obs["obs"].to('cpu')
+        latent = adaptation_module.forward(obs_history)
+        # New load-carry student bodies consume [current obs, latent]. Older
+        # checkpoints consumed [obs_history, latent], so fall back by shape.
+        try:
+            action = body.forward(torch.cat((current_obs, latent), dim=-1))
+        except RuntimeError:
+            action = body.forward(torch.cat((obs_history, latent), dim=-1))
         info['latent'] = latent
         return action
 

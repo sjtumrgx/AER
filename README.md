@@ -31,6 +31,8 @@ This repository is a Go2-focused adaptation of the AER / Walk These Ways locomot
 │   ├── play.py              # Single-command Go2 rollout, logging, video capture
 │   ├── play_vary_lin.py     # Linear-speed sweep helper
 │   ├── play_vary_ang.py     # Yaw-speed sweep helper
+│   ├── collect_load_carry_metrics.py # Load-carry rollout metric collector
+│   ├── evaluate_load_carry.py        # Load-carry CSV summarizer and plotter
 │   └── actuator_net/        # Actuator-network training/evaluation helpers
 └── setup.py                 # Editable package install
 ```
@@ -148,6 +150,7 @@ Go2 configuration files:
 | `gym/envs/go2/go2_config.py` | Base Go2 asset path, spawn pose, command ranges, reward defaults |
 | `gym/envs/go2/go2_config_adaptive.py` | Flat-ground adaptive-energy reward configuration |
 | `gym/envs/go2/go2_config_adaptive_terrain.py` | Terrain curriculum with adaptive-energy rewards |
+| `gym/envs/go2/go2_config_load_carry.py` | Payload/load-carry domain randomization, privileged observations, and baseline configs |
 
 ## 🏋️ Training Go2
 
@@ -155,12 +158,17 @@ Go2 configuration files:
 
 | Argument | Default | Description |
 | --- | --- | --- |
-| `--cfg` | `adaptive_en` | `original`, `adaptive_en`, or `adaen_terrain` |
+| `--cfg` | `adaptive_en` | `original`, `adaptive_en`, `adaen_terrain`, or `load_carry` |
 | `--headless` | off | Disable Isaac Gym viewer for remote or faster training |
 | `--device` | `0` | CUDA device index, passed as `cuda:<device>` |
 | `--seed` | `0` | PyTorch/NumPy/Python random seed |
 | `--en_new_actual` | `0.0` | Actual energy regularization scale |
 | `--en_new_cmd` | `0.0` | Command-conditioned energy regularization scale |
+| `--training_stage` | `teacher_ppo` | Load-carry stage: `teacher_ppo`, `latent_pretrain`, `student_distill`, `student_ppo`, or `full` |
+| `--baseline` | `adaptive_energy` | Load-carry ablation: `adaptive_energy`, `fixed_energy`, `no_energy`, or `domain_rand_policy` |
+| `--adaptation_encoder` | `cnn` | Load-carry temporal encoder: `cnn`, `gru`, or `mlp` |
+| `--latent_dim` | `8` | Load-carry student latent dimension; use 8 or 16 |
+| `--teacher_checkpoint` | unset | Local teacher `ac_weights_*.pt` used to initialize/freeze teacher modules in student stages |
 | `--iterations` | `5000` | PPO learning iterations |
 | `--num_envs` | `4000` | Effective Go2 environment count from `Go2Config.env.num_envs`; lower it only for small GPUs or debugging |
 | `--num_steps_per_env` | `24` | PPO rollout steps per environment per iteration from `RunnerArgs.num_steps_per_env` |
@@ -284,6 +292,113 @@ wait
 If one GPU runs out of memory, lower `--num_envs` for that process only.
 
 Training outputs are written below `checkpoints/train/<run-name>/`. The runner exports `checkpoints/body_latest.jit` and `checkpoints/adaptation_module_latest.jit` for evaluation/deployment.
+
+### Load-carry asymmetric teacher-student training
+
+Use `--cfg load_carry` for payload domain randomization and the asymmetric
+teacher-student architecture. The teacher is privileged during training; the
+exported deployment path keeps only the student actor and temporal adaptation
+encoder.
+
+- teacher actor: current proprioception `o_t` + privileged load/terrain state
+- student actor: current proprioception `o_t` + `z_t = E(o_{t-H:t})`
+- adaptation encoder: `--adaptation_encoder cnn|gru|mlp`, default CNN, `H=30`
+- privileged critic: `o_t` + privileged state during training only
+- privileged state schema: base velocity, payload mass, payload CoM offset,
+  payload inertia, payload relative pose/velocity, ground friction, terrain
+  difficulty, and external disturbance channels
+- energy term: load-normalized transport cost,
+  `E / ((m_robot + m_payload) g d)`, with adaptive, fixed, or disabled
+  alpha weighting
+
+Recommended staged route:
+
+```bash
+# 1) privileged teacher PPO
+python scripts/train.py --cfg load_carry --training_stage teacher_ppo \
+  --baseline adaptive_energy --adaptation_encoder cnn --latent_dim 16 \
+  --headless --device 0 --iterations 5000 --num_envs 4000 --num_steps_per_env 24
+
+# Save the teacher checkpoint path, for example:
+TEACHER_CKPT=checkpoints/train/load-carry-adaptive_energy-teacher_ppo-cnn-z16-seed-100/checkpoints/ac_weights_000400.pt
+
+# 2) latent supervised pretraining from the frozen teacher
+python scripts/train.py --cfg load_carry --training_stage latent_pretrain \
+  --baseline adaptive_energy --adaptation_encoder cnn --latent_dim 16 \
+  --teacher_checkpoint "$TEACHER_CKPT" \
+  --headless --device 0 --iterations 1000
+
+# 3) student behavior cloning / DAgger distillation from the frozen teacher
+python scripts/train.py --cfg load_carry --training_stage student_distill \
+  --baseline adaptive_energy --adaptation_encoder cnn --latent_dim 16 \
+  --teacher_checkpoint "$TEACHER_CKPT" \
+  --dagger_teacher_prob 0.2 \
+  --headless --device 0 --iterations 2000
+
+# 4) student PPO fine-tuning with deployment observations only
+python scripts/train.py --cfg load_carry --training_stage student_ppo \
+  --baseline adaptive_energy --adaptation_encoder cnn --latent_dim 16 \
+  --teacher_checkpoint "$TEACHER_CKPT" \
+  --headless --device 0 --iterations 2500 --num_envs 2000 --num_steps_per_env 24
+```
+
+Baseline runs:
+
+```bash
+# Student ablations still use the frozen teacher checkpoint for distillation.
+python scripts/train.py --cfg load_carry --baseline no_energy \
+  --training_stage student_ppo --teacher_checkpoint "$TEACHER_CKPT" --headless
+python scripts/train.py --cfg load_carry --baseline fixed_energy \
+  --training_stage student_ppo --teacher_checkpoint "$TEACHER_CKPT" --headless
+
+# Plain domain-randomization baseline disables teacher-student losses.
+python scripts/train.py --cfg load_carry --baseline domain_rand_policy \
+  --headless --iterations 3000 --num_envs 2000 --num_steps_per_env 24
+```
+
+Collect load-carry rollout metrics across payload mass, CoM offset, and dynamic
+payload conditions, then generate the required plots:
+
+```bash
+MODEL_DIR=checkpoints/train/load-carry-adaptive_energy-student_ppo-cnn-z16-seed-200
+
+python scripts/collect_load_carry_metrics.py \
+  --model_dir "$MODEL_DIR" \
+  --headless \
+  --device 0 \
+  --num_steps 200 \
+  --payload_masses 0,2,4,6,8 \
+  --com_offsets 0.0,0.04,-0.04 \
+  --dynamic_payload \
+  --output_csv "$MODEL_DIR/analysis/load_carry_rollouts.csv"
+
+python scripts/evaluate_load_carry.py \
+  --metrics_csv "$MODEL_DIR/analysis/load_carry_rollouts.csv" \
+  --output_dir "$MODEL_DIR/analysis/load_carry_plots" \
+  --payload_masses 0,2,4,6,8 \
+  --com_offsets 0.0,0.04,-0.04 \
+  --dynamic_payload
+```
+
+The load-carry evaluation registry covers CoT, tracking error, fall rate, joint
+power, foot contact schedule, stance duration, body height, and gait transition
+plots across payload mass, CoM offset, and dynamic payload conditions.
+
+For a four-policy comparison, run the collector/evaluator once per policy and
+merge the resulting CSVs with a `policy` column. A completed local comparison
+used 30 conditions per policy (`5` payload masses × `3` CoM offsets ×
+static/dynamic payload) and `200` rollout steps per condition, producing
+`6000` rows per policy and `24000` rows combined. Generated checkpoints,
+rollout CSVs, and PNG plots live under `checkpoints/` and are intentionally
+git-ignored; publish code and documentation, not training artifacts.
+
+The first long comparison run produced the requested plots for
+`adaptive_energy`, `fixed_energy`, `no_energy`, and `domain_rand_policy`.
+Its aggregate metrics were mixed rather than a blanket win for adaptive alpha:
+adaptive energy improved some tracking/robustness slices, while the
+domain-randomization baseline had the lowest aggregate CoT in that run. Treat
+the plots and CSV summaries as ablation evidence to inspect, not as a fixed
+claim that one baseline always dominates.
 
 ## ▶️ Play and evaluation
 

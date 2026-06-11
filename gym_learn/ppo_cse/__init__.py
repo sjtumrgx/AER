@@ -2,6 +2,7 @@ import time
 from collections import deque
 import copy
 import os
+from pathlib import Path
 
 import torch
 from ml_logger import logger
@@ -58,6 +59,10 @@ class RunnerArgs(PrefixProto, cli=False):
     checkpoint = -1  # -1 = last saved model
     resume_path = None  # updated from load_run and chkpt
     resume_curriculum = True
+    training_stage = "teacher_ppo"
+    baseline = "adaptive_energy"
+    dagger_teacher_prob = 0.0
+    teacher_checkpoint = None
 
 
 class Runner:
@@ -91,6 +96,26 @@ class Runner:
                 for gait_id, gait_name in enumerate(self.env.category_names):
                     self.env.curricula[gait_id].weights = distribution_last[f"weights_{gait_name}"]
                     print(gait_name)
+
+        if RunnerArgs.teacher_checkpoint:
+            checkpoint_path = Path(RunnerArgs.teacher_checkpoint).expanduser()
+            if not checkpoint_path.is_absolute():
+                checkpoint_path = Path.cwd() / checkpoint_path
+            weights = torch.load(checkpoint_path, map_location=self.device)
+            if isinstance(weights, dict) and "state_dict" in weights:
+                weights = weights["state_dict"]
+            missing_keys, unexpected_keys = actor_critic.load_state_dict(weights, strict=False)
+            print(f"Loaded teacher checkpoint from {checkpoint_path}")
+            if missing_keys:
+                print(f"Missing keys while loading teacher checkpoint: {missing_keys}")
+            if unexpected_keys:
+                print(f"Unexpected keys while loading teacher checkpoint: {unexpected_keys}")
+
+        if RunnerArgs.training_stage in {"latent_pretrain", "student_distill", "student_ppo", "full"} and RunnerArgs.teacher_checkpoint:
+            for module in [actor_critic.teacher_actor_body, actor_critic.teacher_latent_encoder]:
+                for param in module.parameters():
+                    param.requires_grad_(False)
+            print("Frozen teacher actor and privileged-to-latent encoder for student-stage training.")
 
         self.alg = PPO(actor_critic, device=self.device)
         self.num_steps_per_env = RunnerArgs.num_steps_per_env
@@ -139,14 +164,50 @@ class Runner:
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
+                    commands = self.env.commands if hasattr(self.env, "commands") else None
+                    terrain_difficulty = self.env.get_terrain_difficulty() if hasattr(self.env, "get_terrain_difficulty") else None
                     actions_train = self.alg.act(obs[:num_train_envs], privileged_obs[:num_train_envs],
-                                                 obs_history[:num_train_envs])
+                                                 obs_history[:num_train_envs],
+                                                 commands=commands[:num_train_envs] if commands is not None else None,
+                                                 terrain_difficulty=terrain_difficulty[:num_train_envs] if terrain_difficulty is not None else None)
+                    alpha_train = self.alg.actor_critic.last_energy_alpha
+                    actions_train_env = actions_train
+                    if (getattr(RunnerArgs, "training_stage", "") == "student_distill"
+                            and getattr(RunnerArgs, "dagger_teacher_prob", 0.0) > 0.0
+                            and torch.rand((), device=self.device) < RunnerArgs.dagger_teacher_prob):
+                        teacher_info = {}
+                        actions_train_env = self.alg.actor_critic.act_teacher(
+                            obs[:num_train_envs],
+                            privileged_obs[:num_train_envs],
+                            command=commands[:num_train_envs] if commands is not None else None,
+                            terrain_difficulty=terrain_difficulty[:num_train_envs] if terrain_difficulty is not None else None,
+                            policy_info=teacher_info,
+                        )
+                        alpha_train = teacher_info.get("energy_alpha", alpha_train)
+                    eval_info = {}
                     if eval_expert:
-                        actions_eval = self.alg.actor_critic.act_teacher(obs_history[num_train_envs:],
-                                                                         privileged_obs[num_train_envs:])
+                        actions_eval = self.alg.actor_critic.act_teacher(
+                            obs[num_train_envs:],
+                            privileged_obs[num_train_envs:],
+                            command=commands[num_train_envs:] if commands is not None else None,
+                            terrain_difficulty=terrain_difficulty[num_train_envs:] if terrain_difficulty is not None else None,
+                            policy_info=eval_info,
+                        )
                     else:
-                        actions_eval = self.alg.actor_critic.act_student(obs_history[num_train_envs:])
-                    ret = self.env.step(torch.cat((actions_train, actions_eval), dim=0))
+                        actions_eval = self.alg.actor_critic.act_student(
+                            obs[num_train_envs:],
+                            obs_history[num_train_envs:],
+                            command=commands[num_train_envs:] if commands is not None else None,
+                            terrain_difficulty=terrain_difficulty[num_train_envs:] if terrain_difficulty is not None else None,
+                            policy_info=eval_info,
+                        )
+                    if hasattr(self.env, "set_policy_energy_alpha"):
+                        alpha_eval = eval_info.get("energy_alpha", None)
+                        if alpha_train is not None and alpha_eval is not None:
+                            self.env.set_policy_energy_alpha(torch.cat((alpha_train, alpha_eval), dim=0))
+                        elif alpha_train is not None:
+                            self.env.set_policy_energy_alpha(alpha_train)
+                    ret = self.env.step(torch.cat((actions_train_env, actions_eval), dim=0))
                     obs_dict, rewards, dones, infos = ret
                     obs, privileged_obs, obs_history = obs_dict["obs"], obs_dict["privileged_obs"], obs_dict[
                         "obs_history"]
@@ -195,7 +256,7 @@ class Runner:
 
                 # Learning step
                 start = stop
-                self.alg.compute_returns(obs_history[:num_train_envs], privileged_obs[:num_train_envs])
+                self.alg.compute_returns(obs[:num_train_envs], privileged_obs[:num_train_envs])
 
                 if it % curriculum_dump_freq == 0:
                     logger.save_pkl({"iteration": it,
@@ -221,6 +282,7 @@ class Runner:
                 "mean_surrogate_loss": mean_surrogate_loss,
                 "mean_decoder_loss": mean_decoder_loss,
                 "mean_decoder_loss_student": mean_decoder_loss_student,
+                "distillation_loss": mean_decoder_loss_student,
                 "mean_decoder_test_loss": mean_decoder_test_loss,
                 "mean_decoder_test_loss_student": mean_decoder_test_loss_student,
                 "mean_adaptation_module_test_loss": mean_adaptation_module_test_loss,
