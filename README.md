@@ -310,6 +310,9 @@ encoder.
 - energy term: load-normalized transport cost,
   `E / ((m_robot + m_payload) g d)`, with adaptive, fixed, or disabled
   alpha weighting
+- visible payload: `load_carry` uses a dedicated Go2 URDF with a visual-only
+  cargo box on the base; physical load is still injected through base mass/CoM
+  randomization so the visible mesh does not double-count payload mass
 
 Recommended staged route:
 

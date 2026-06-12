@@ -73,6 +73,7 @@ class LeggedRobot(BaseTask):
         self.prev_base_quat = self.base_quat.clone()
         self.prev_base_lin_vel = self.base_lin_vel.clone()
         self.prev_foot_velocities = self.foot_velocities.clone()
+        self._sync_render_payload_mesh()
         self.render_gui()
         if self.enable_camera_sensor and self.recorder_on:
             for i in range(len(self.cam_env_ids)):
@@ -152,7 +153,7 @@ class LeggedRobot(BaseTask):
         self.time_out_buf = self.episode_length_buf > self.cfg.env.max_episode_length  # no terminal reward for time-outs
         self.reset_buf |= self.time_out_buf
         if self.cfg.rewards.use_terminal_body_height:
-            self.body_height_buf = torch.mean(self.root_states[:, 2].unsqueeze(1) - self.measured_heights, dim=1) < self.cfg.rewards.terminal_body_height
+            self.body_height_buf = torch.mean(self.root_states[:self.num_envs, 2].unsqueeze(1) - self.measured_heights, dim=1) < self.cfg.rewards.terminal_body_height
             self.reset_buf = torch.logical_or(self.body_height_buf, self.reset_buf)
 
     def reset_idx(self, env_ids):
@@ -392,7 +393,7 @@ class LeggedRobot(BaseTask):
 
         # Add height measurement if terrain is added.
         if self.cfg.env.observe_heights:
-            heights = torch.clip(self.root_states[:, 2].unsqueeze(1) - 0.2 - self.measured_heights, -1, 1)
+            heights = torch.clip(self.root_states[:self.num_envs, 2].unsqueeze(1) - 0.2 - self.measured_heights, -1, 1)
             self.obs_buf = torch.cat((self.obs_buf, heights), dim=-1)
 
         # build privileged obs
@@ -600,6 +601,28 @@ class LeggedRobot(BaseTask):
         self.root_states[0, 0:3] = torch.Tensor(loc)
         self.root_states[0, 3:7] = torch.Tensor(quat)
         self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.root_states))
+
+    def _sync_render_payload_mesh(self):
+        """Move optional review-only cargo actors with the robot base.
+
+        The actors are created after all robot actors, so the first num_envs
+        root states remain the robots used by observations, rewards, and resets.
+        """
+        payload_actor_indices = getattr(self, "render_payload_actor_indices_int32", None)
+        payload_actor_indices_long = getattr(self, "render_payload_actor_indices_long", None)
+        if payload_actor_indices is None or len(payload_actor_indices) == 0:
+            return
+        offset = self.render_payload_mesh_offset.unsqueeze(0).repeat(len(payload_actor_indices), 1)
+        payload_pos = self.root_states[:self.num_envs, 0:3] + quat_apply(self.root_states[:self.num_envs, 3:7], offset)
+        self.root_states[payload_actor_indices_long, 0:3] = payload_pos
+        self.root_states[payload_actor_indices_long, 3:7] = self.root_states[:self.num_envs, 3:7]
+        self.root_states[payload_actor_indices_long, 7:13] = 0.0
+        self.gym.set_actor_root_state_tensor_indexed(
+            self.sim,
+            gymtorch.unwrap_tensor(self.root_states),
+            gymtorch.unwrap_tensor(payload_actor_indices),
+            len(payload_actor_indices),
+        )
 
     # ------------- Callbacks --------------
     def _call_train_eval(self, func, env_ids):
@@ -1192,6 +1215,18 @@ class LeggedRobot(BaseTask):
 
         # create some wrapper tensors for different slices
         self.root_states = gymtorch.wrap_tensor(actor_root_state)
+        render_payload_actor_indices = getattr(self, "render_payload_actor_indices", [])
+        if render_payload_actor_indices:
+            self.render_payload_actor_indices_long = torch.tensor(render_payload_actor_indices, dtype=torch.long, device=self.device)
+            self.render_payload_actor_indices_int32 = torch.tensor(render_payload_actor_indices, dtype=torch.int32, device=self.device)
+            self.render_payload_mesh_offset = torch.tensor(
+                self.cfg.asset.render_payload_mesh_offset,
+                dtype=torch.float,
+                device=self.device,
+            )
+        else:
+            self.render_payload_actor_indices_long = None
+            self.render_payload_actor_indices_int32 = None
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
         self.net_contact_forces = gymtorch.wrap_tensor(net_contact_forces)[:self.num_envs * self.num_bodies, :]
         self.dof_pos = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 0]
@@ -1570,6 +1605,18 @@ class LeggedRobot(BaseTask):
         self.actor_handles = []
         self.imu_sensor_handles = []
         self.envs = []
+        self.render_payload_actor_handles = []
+        self.render_payload_actor_indices = []
+        render_payload_asset = None
+        if getattr(self.cfg.asset, "render_payload_mesh", False):
+            render_payload_options = gymapi.AssetOptions()
+            render_payload_options.disable_gravity = True
+            render_payload_options.density = 0.001
+            render_payload_asset = self.gym.create_box(
+                self.sim,
+                *self.cfg.asset.render_payload_mesh_size,
+                render_payload_options,
+            )
 
         if self.enable_camera_sensor:
             self.camera_handles = []
@@ -1596,6 +1643,17 @@ class LeggedRobot(BaseTask):
             body_props = self.gym.get_actor_rigid_body_properties(env_handle, anymal_handle)
             body_props = self._process_rigid_body_props(body_props, i)
             self.gym.set_actor_rigid_body_properties(env_handle, anymal_handle, body_props, recomputeInertia=True)
+            for body_name, color in getattr(self.cfg.asset, "visual_body_colors", {}).items():
+                body_handle = self.gym.find_actor_rigid_body_handle(env_handle, anymal_handle, body_name)
+                if body_handle < 0:
+                    raise RuntimeError(f"Configured visual body color target not found: {body_name}")
+                self.gym.set_rigid_body_color(
+                    env_handle,
+                    anymal_handle,
+                    body_handle,
+                    gymapi.MESH_VISUAL,
+                    gymapi.Vec3(*color),
+                )
             self.envs.append(env_handle)
             self.actor_handles.append(anymal_handle)
 
@@ -1608,6 +1666,36 @@ class LeggedRobot(BaseTask):
                 camera_handle = self.gym.create_camera_sensor(env_handle, camera_properties)
                 self.gym.set_camera_location(camera_handle, env_handle, camera_position, camera_target)
                 self.camera_handles.append(camera_handle)
+
+        if render_payload_asset is not None:
+            for i, env_handle in enumerate(self.envs):
+                payload_pose = gymapi.Transform()
+                robot_pos = self.root_states[i, 0:3] if hasattr(self, "root_states") else self.env_origins[i]
+                payload_offset = self.cfg.asset.render_payload_mesh_offset
+                payload_pose.p = gymapi.Vec3(
+                    float(robot_pos[0]) + payload_offset[0],
+                    float(robot_pos[1]) + payload_offset[1],
+                    float(robot_pos[2]) + payload_offset[2],
+                )
+                payload_handle = self.gym.create_actor(
+                    env_handle,
+                    render_payload_asset,
+                    payload_pose,
+                    f"payload_visual_{i}",
+                    self.num_envs + i,
+                    0,
+                    0,
+                )
+                color = self.cfg.asset.render_payload_mesh_color
+                self.gym.set_rigid_body_color(
+                    env_handle,
+                    payload_handle,
+                    0,
+                    gymapi.MESH_VISUAL,
+                    gymapi.Vec3(*color),
+                )
+                self.render_payload_actor_handles.append(payload_handle)
+                self.render_payload_actor_indices.append(self.gym.get_actor_index(env_handle, payload_handle, gymapi.DOMAIN_SIM))
 
         self.feet_indices = torch.zeros(len(self.feet_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(self.feet_names)):

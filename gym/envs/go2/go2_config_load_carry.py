@@ -49,6 +49,12 @@ class LoadCarryGo2Config(AdaptiveGo2ConfigTerrain):
         priv_observe_terrain_parameters = True
         priv_observe_external_disturbance = True
 
+    class asset(AdaptiveGo2ConfigTerrain.asset):
+        # Dedicated load-carry URDF adds a visual-only cargo mesh so review videos
+        # show the payload. Physical payload mass/CoM is still applied in
+        # LeggedRobot._process_rigid_body_props to avoid double-counting mass.
+        file = '{MINI_GYM_ROOT_DIR}/resources/robots/go2/urdf/go2_load_carry_visual.urdf'
+
     class domain_rand(AdaptiveGo2ConfigTerrain.domain_rand):
         randomize_base_mass = True
         added_mass_range = [0.0, 8.0]

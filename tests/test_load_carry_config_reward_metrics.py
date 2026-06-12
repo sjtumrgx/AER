@@ -66,6 +66,43 @@ class LoadCarryConfigRewardMetricsTest(unittest.TestCase):
         self.assertIn('RunnerArgs.training_stage in {"latent_pretrain", "student_distill", "student_ppo", "full"}', runner_source)
         self.assertIn("param.requires_grad_(False)", runner_source)
 
+    def test_load_carry_asset_uses_visual_only_payload_mesh_without_double_counting_mass(self):
+        from xml.etree import ElementTree as ET
+
+        from gym.envs.go2.go2_config_load_carry import LoadCarryGo2Config
+
+        asset_file = LoadCarryGo2Config.asset.file
+        self.assertIn("go2_load_carry_visual.urdf", asset_file)
+        urdf_path = ROOT / asset_file.replace("{MINI_GYM_ROOT_DIR}/", "")
+        self.assertTrue(urdf_path.exists(), urdf_path)
+
+        root = ET.parse(urdf_path).getroot()
+        payload_link = root.find("./link[@name='payload_visual_box']")
+        self.assertIsNotNone(payload_link)
+        self.assertIsNotNone(payload_link.find("visual/geometry/box"))
+        self.assertEqual("0.30 0.20 0.12", payload_link.find("visual/geometry/box").attrib["size"])
+        self.assertIsNone(payload_link.find("collision"), "URDF payload mesh must not add physical contacts")
+        self.assertEqual("0.001", payload_link.find("inertial/mass").attrib["value"])
+
+        payload_joint = root.find("./joint[@name='payload_visual_joint']")
+        self.assertIsNotNone(payload_joint)
+        self.assertEqual("fixed", payload_joint.attrib["type"])
+        self.assertEqual("true", payload_joint.attrib.get("dont_collapse"))
+        self.assertEqual("base", payload_joint.find("parent").attrib["link"])
+        self.assertEqual("payload_visual_box", payload_joint.find("child").attrib["link"])
+
+    def test_review_payload_mesh_render_actor_is_opt_in(self):
+        from gym.envs.go2.go2_config_load_carry import LoadCarryGo2Config
+
+        self.assertFalse(LoadCarryGo2Config.asset.render_payload_mesh)
+        self.assertEqual([0.30, 0.20, 0.12], LoadCarryGo2Config.asset.render_payload_mesh_size)
+        self.assertEqual([0.02, 0.0, 0.13], LoadCarryGo2Config.asset.render_payload_mesh_offset)
+        env_source = (ROOT / "gym" / "envs" / "base" / "legged_robot.py").read_text()
+        self.assertIn("render_payload_mesh", env_source)
+        self.assertIn("create_box", env_source)
+        self.assertIn("_sync_render_payload_mesh", env_source)
+        self.assertIn("set_rigid_body_color", env_source)
+
     def test_load_normalized_transport_reward_modes(self):
         from gym.envs.rewards.corl_rewards import CoRLRewards
 

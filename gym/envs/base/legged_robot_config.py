@@ -244,6 +244,11 @@ class Cfg(BaseConfig):
         # replace collision cylinders with capsules, leads to faster/more stable simulation
         replace_cylinder_with_capsule = True
         flip_visual_attachments = True  # Some .obj meshes must be flipped from y-up to z-up
+        visual_body_colors = {}  # optional body_name -> [r, g, b] visual color override
+        render_payload_mesh = False  # optional review-only cargo actor; disabled for training
+        render_payload_mesh_size = [0.30, 0.20, 0.12]
+        render_payload_mesh_offset = [0.02, 0.0, 0.13]
+        render_payload_mesh_color = [1.0, 0.45, 0.05]
 
         density = 0.001
         angular_damping = 0.
