@@ -23,6 +23,7 @@ This repository is a Go2-focused adaptation of the AER / Walk These Ways locomot
 │       └── wrappers/        # Observation-history wrapper used by PPO-CSE
 ├── gym_learn/               # PPO and PPO-CSE runners, actor-critic modules, rollout storage
 ├── gym_deploy/              # LCM-based deployment utilities and robot-side scripts
+├── unitree_mujoco/          # Unitree SDK2 + MuJoCo sim2sim/sim2real bridge, no ROS
 ├── resources/
 │   ├── actuator_nets/       # JIT actuator network used by actuator_net control
 │   └── robots/go2/          # Go2 URDF/MJCF/mesh assets
@@ -459,6 +460,70 @@ Review these outputs before hardware work:
 - `analysis/*gait_info*.yaml`
 - commanded vs measured base velocity plots
 - joint position, velocity, torque, and energy traces
+
+## 🤖 Unitree MuJoCo sim2sim and SDK2 sim2real
+
+`unitree_mujoco/` contains the no-ROS Unitree SDK2 + MuJoCo bridge for the
+exported load-carry student policy. The migrated bundle is:
+
+```text
+unitree_mujoco/policies/go2_load_carry_student/
+├── body_latest.jit
+├── adaptation_module_latest.jit
+├── unitree_go2_actuator.pt
+├── env_cfg.yaml
+└── manifest.json
+```
+
+The bridge keeps the IsaacGym policy contract explicit: 70-D observations,
+30-step history, 12 actions, Go2 joint-order remapping, IsaacGym observation
+post-processing (`obs[6:18] = 0`, `obs[66:70] = 0`), and the optional
+actuator-net torque model. The default sim2sim path uses position-PD targets
+because that is the same low-level command form sent by sim2real `LowCmd`.
+
+Headless sim2sim smoke:
+
+```bash
+MUJOCO_GL=egl python unitree_mujoco/aer_policy/sim2sim_aer.py \
+  --steps 300 \
+  --lin_speed 0.5 \
+  --json
+```
+
+Open a MuJoCo viewer with the visible orange payload mesh:
+
+```bash
+python unitree_mujoco/aer_policy/sim2sim_aer.py \
+  --viewer \
+  --lin_speed 0.5 \
+  --payload_mass 2.0
+```
+
+`--payload_mass` applies physical base payload mass/COM in MuJoCo; the visual
+mesh is kept visual-only so it does not double-count mass unless this flag is
+set. Use `--control actuator_net --match_isaacgym_action_lag` when you need to
+debug the IsaacGym actuator-network path directly.
+
+Before hardware, run the SDK2 dry run:
+
+```bash
+python unitree_mujoco/aer_policy/sim2real_aer.py --dry_run --json
+```
+
+After sim2sim is acceptable, one-command sim2real is the same policy loop with
+only the network interface changed from loopback to the Go2 NIC:
+
+```bash
+python unitree_mujoco/aer_policy/sim2real_aer.py \
+  --net eth0 \
+  --domain 0 \
+  --lin_speed 0.2 \
+  --max_steps 5000
+```
+
+Replace `eth0` with the actual Unitree-facing interface. Keep an emergency-stop
+operator present, start with conservative commands, and verify low-level mode,
+joint order, and DDS domain on the robot before walking.
 
 ## 🚀 Real-robot deployment
 

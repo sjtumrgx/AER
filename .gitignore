@@ -71,6 +71,9 @@ __pycache__
 docker/rsc
 *.swp
 *.jit
+!unitree_mujoco/policies/
+!unitree_mujoco/policies/**/
+!unitree_mujoco/policies/go2_load_carry_student/*.jit
 tmp
 *.tar
 

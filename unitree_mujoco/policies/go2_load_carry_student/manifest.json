@@ -1,0 +1,46 @@
+{
+  "actuator_net": "unitree_go2_actuator.pt",
+  "adaptation_module": "adaptation_module_latest.jit",
+  "body": "body_latest.jit",
+  "env_cfg": "env_cfg.yaml",
+  "name": "go2_load_carry_student",
+  "num_actions": 12,
+  "num_commands": 15,
+  "num_observation_history": 30,
+  "num_observations": 70,
+  "policy_joint_order": [
+    "FL_hip_joint",
+    "FL_thigh_joint",
+    "FL_calf_joint",
+    "FR_hip_joint",
+    "FR_thigh_joint",
+    "FR_calf_joint",
+    "RL_hip_joint",
+    "RL_thigh_joint",
+    "RL_calf_joint",
+    "RR_hip_joint",
+    "RR_thigh_joint",
+    "RR_calf_joint"
+  ],
+  "sha256": {
+    "adaptation_module_latest.jit": "7c42c1f07bc2aa5a4cc76229d24e54def719472fed13185b3e4bf8879e36df09",
+    "body_latest.jit": "0d5488d513d342113444e378865e15fd79f6e90848e3f106480a401f848055fd",
+    "env_cfg.yaml": "6fe9519a860429c6cd8c13be6a905e69a7adf9ae1ddf71d34c46f7470a06f96c",
+    "unitree_go2_actuator.pt": "d7ae096eb4cbee2ff40e394bbee07c6d95fef340007531ca0eb97ea3367b1027"
+  },
+  "source_checkpoint": "checkpoints/train/load-carry-adaptive_energy-student_ppo-cnn-z16-seed-200",
+  "unitree_mujoco_joint_order": [
+    "FR_hip_joint",
+    "FR_thigh_joint",
+    "FR_calf_joint",
+    "FL_hip_joint",
+    "FL_thigh_joint",
+    "FL_calf_joint",
+    "RR_hip_joint",
+    "RR_thigh_joint",
+    "RR_calf_joint",
+    "RL_hip_joint",
+    "RL_thigh_joint",
+    "RL_calf_joint"
+  ]
+}
